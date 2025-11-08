@@ -2,17 +2,22 @@
 <html lang="en">
 <head>
     <meta charset="utf-8">
-    <title>WebGL Viewer</title>
+    <title>WebGL Viewer - Orthographic</title>
+
     <script src="common/webgl-utils.js"></script>
     <script src="common/initShaders.js"></script>
     <script src="common/MV.js"></script>
+    <style>
+        body { font-family: system-ui, Arial, sans-serif; margin: 16px; }
+        #gl-canvas { border: 1px solid #ccc; display: block; margin-top: 8px; }
+        .row { display:flex; align-items:center; gap:8px; }
+    </style>
 </head>
-
 <body>
-    <div>
-        depth 0.05
+    <div class="row">
+        <span>depth 0.05</span>
         <input id="depthSlider" type="range" min="0.05" max="3" step="0.1" value="2" />
-        3
+        <span>3</span>
     </div>
 
     <canvas id="gl-canvas" width="512" height="512"></canvas>
@@ -34,67 +39,171 @@
 
     <!-- Fragment Shader -->
     <script id="fragment-shader" type="x-shader/x-fragment">
-        precision mideump float;
+        precision mediump float;
         varying vec4 vColor;
-
         void main() {
             gl_FragColor = vColor;
         }
     </script>
 
     <!-- Main JavaScript -->
-    <script type="text/javascript">
-        let gl;
-        let uModelViewMatrix, projectionMatrixLoc;
-        let radius = 2.0, theta = 0.5, phi = 0.5;
-        let at = vec3(0.0, 0.0, 0.0);
-        let up = vec3(0.0, 1.0, 0.0);
-        let left = -2.0, right = 2.0, bottom = -2.0, ytop = 2.0, near = -1.0, far = 1.0;
+    <script>
+    
+    let gl;
+    let modelViewMatrixLoc, projectionMatrixLoc;
+    let numPositions = 0;
+    
+    // Camera (spherical) and view volume
+    let radius = 2.2, theta = 0.8, phi = 0.9;
+    const at = vec3(0.0, 0.0, 0.0);
+    const up = vec3(0.0, 1.0, 0.0);
+    let left = -2.0, right = 2.0, bottom = -2.0, ytop = 2.0, near = -1.0, far = 1.0;
 
-        window.onload = function init() {
-            const canvas = document.getElementByID("gl-canvas");
-            gl = WebGLUtils.setupWebGL(canvas);
-            if (!gl) alert("WebGL Not available");
+    // Buffers
+    let positionBuffer, colorBuffer;
 
-            gl.viewport(0, 0, canvas.width, canvas.height);
-            gl.clearColor(0.9, 0.9, 0.9, 1.0);
-            gl.enable(gl.DEPTH_TEST);
-            gl.depthFunc(gl.LESS);
+    // --- Geometry: Colored cube (12 triangles) ---
+    // 8 cube vertices
+    const vertices = [
+        vec4(-0.5, -0.5,  0.5, 1.0),  // 0 front-bottom-left
+        vec4( 0.5, -0.5,  0.5, 1.0),  // 1 front-bottom-right
+        vec4( 0.5,  0.5,  0.5, 1.0),  // 2 front-top-right
+        vec4(-0.5,  0.5,  0.5, 1.0),  // 3 front-top-left
+        vec4(-0.5, -0.5, -0.5, 1.0),  // 4 back-bottom-left
+        vec4( 0.5, -0.5, -0.5, 1.0),  // 5 back-bottom-right
+        vec4( 0.5,  0.5, -0.5, 1.0),  // 6 back-top-right
+        vec4(-0.5,  0.5, -0.5, 1.0),  // 7 back-top-left
+    ];
 
-            const program = initShaders(gl, "vertex-shader", "fragment-shader");
-            gl.useProgram(program);
+    // Per-vertex colors
+    const baseColors = [
+        vec4(1.0, 0.0, 0.0, 1.0), // red
+        vec4(0.0, 1.0, 0.0, 1.0), // green
+        vec4(0.0, 0.0, 1.0, 1.0), // blue
+        vec4(1.0, 1.0, 0.0, 1.0), // yellow
+        vec4(1.0, 0.0, 1.0, 1.0), // magenta
+        vec4(0.0, 1.0, 1.0, 1.0), // cyan
+        vec4(1.0, 0.5, 0.0, 1.0), // orange
+        vec4(0.7, 0.7, 0.7, 1.0), // gray
+    ];
 
-            modelViewMatrixLoc = gl.getUniformLocation(program, "uModelViewMatrix");
-            projectionMatrixLoc = gl.getUniformLocation(program, "uProjectionMatrix");
+    const positions = [];
+    const colors = [];
 
-            render();
-        };
+    // Push two triangles for a quad
+    function quad(a, b, c, d, colorIndex) {
+        const col = baseColors[colorIndex % baseColors.length];
+        const tri = [a, b, c, a, c, d];
+        tri.forEach(i => {
+            positions.push(vertices[i]);
+            colors.push(col);
+        });
+    }
 
-        function render() {
-            gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    // Faces: +Z (front), +X (right), -Z (back), -X (left), +Y (top), -Y (bottom)
+    function buildCube() {
+        quad(0, 1, 2, 3, 0); // front
+        quad(1, 5, 6, 2, 1); // right
+        quad(5, 4, 7, 6, 2); // back
+        quad(4, 0, 3, 7, 3); // left
+        quad(3, 2, 6, 7, 4); // top
+        quad(4, 5, 1, 0, 5); // bottom
+        numPositions = positions.length; // vec4s
+    }
 
-            const eye = vec3(
-                radius * Math.sin(theta) * Math.cos(phi),
-                radius * Math.sin(theta) * Math.sin(phi),
-                radius * Math.cos(theta)
-            );
+    // --- Init ---
+    window.onload = function init() {
+        const canvas = document.getElementById("gl-canvas");
+        gl = WebGLUtils.setupWebGL(canvas);
+        if (!gl) { alert("WebGL Not available"); return; }
 
-            const modelViewMatrix = lookAt(eye, at, up);
-            const projectionMatrix = ortho(left, right, bottom, ytop, near, far);
+        // Viewport & clear
+        gl.viewport(0, 0, canvas.width, canvas.height);
+        gl.clearColor(0.93, 0.93, 0.95, 1.0);
+        gl.enable(gl.DEPTH_TEST);
+        gl.depthFunc(gl.LESS);
 
-            gl.uniformMatrix4fv(modelViewMatrixLoc, false, flatten(modelViewMatrix));
-            gl.uniformMatrix4fv(projectionMatrixLoc, false, flatten(projectionMatrix));
+        // Program
+        const program = initShaders(gl, "vertex-shader", "fragment-shader");
+        gl.useProgram(program);
 
-            gl.drawArrays(gl.TRIANGLES, 0, numPositions);
-            requestAnimationFrame(render);
-        }
+        // Build geometry
+        buildCube();
 
+        // Position buffer
+        positionBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, flatten(positions), gl.STATIC_DRAW);
+        const aPosition = gl.getAttribLocation(program, "aPosition");
+        gl.vertexAttribPointer(aPosition, 4, gl.FLOAT, false, 0, 0);
+        gl.enableVertexAttribArray(aPosition);
+
+        // Color buffer
+        colorBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, colorBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, flatten(colors), gl.STATIC_DRAW);
+        const aColor = gl.getAttribLocation(program, "aColor");
+        gl.vertexAttribPointer(aColor, 4, gl.FLOAT, false, 0, 0);
+        gl.enableVertexAttribArray(aColor);
+
+        // Uniform locations
+        modelViewMatrixLoc = gl.getUniformLocation(program, "uModelViewMatrix");
+        projectionMatrixLoc = gl.getUniformLocation(program, "uProjectionMatrix");
+
+        // Depth slider (live)
         const depthSlider = document.getElementById("depthSlider");
-        depthSlider.addEveentListener("input", (e) => {
+        depthSlider.addEventListener("input", (e) => {
             const v = parseFloat(e.target.value);
             far = v * 0.5;
             near = -v * 0.5;
         });
+
+        // Mouse drag to orbit camera
+        attachOrbitControls(canvas);
+
+        requestAnimationFrame(render);
+    };
+
+    // --- Orbit controls (drag to rotate) --- 
+    function attachOrbitControls(canvas) {
+        let dragging = false, lastX = 0, lastY = 0;
+        canvas.addEventListener("mousedown", (e) => { dragging = true; lastX = e.clientX; lastY = e.clientY; });
+        window.addEventListener("mouseup", () => { dragging = false; });
+        window.addEventListener("mousemove", (e) => {
+            if (!draggin) return;
+            const dx = e.clientX - lastX;
+            const dy = e.clientY - lastY;
+            lastX = e.clientX; lastY = e.clientY;
+            // Adjust angles
+            phi += dx * 0.005;
+            theta = Math.min(Math.max(theta - dy * 0.005, 0.05), Math.PI - 0.05);
+        });
+    }
+
+    // --- Render Loop ---
+    function render() {
+        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+        // Camera position from spherical coordinates
+        const eye = vec3(
+            radius * Math.sin(theta) * Math.cos(phi),
+            radius * Math.sin(theta) * Math.sin(phi),
+            radius * Math.cos(theta)
+        );
+
+        // View & projection
+        const modelViewMatrix = lookAt(eye, at, up);
+        const projectionMatrix = ortho(left, right, bottom, ytop, near, far);
+
+        // Upload uniforms
+        gl.uniformMatrix4fv(modelViewMatrixLoc, false, flatten(modelViewMatrix));
+        gl.uniformMatrix4fv(projectionMatrixLoc, false, flatten(projectionMatrix));
+
+        // Draw the cube
+        gl.drawArrays(gl.TRIANGLES, 0, numPositions);
+
+        requestAnimationFrame(render);
+    }
     </script>
 </body>
 </html>
