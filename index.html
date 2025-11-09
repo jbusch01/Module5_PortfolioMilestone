@@ -53,11 +53,12 @@
     let gl;
     let modelViewMatrixLoc, projectionMatrixLoc;
     let numPositions = 0;
+    let radius = 2.2;
+    // Added for arcball click and drag function
+    let modelRot = mat4();
     
     // Camera (spherical) and view volume
-    let radius = 2.2, theta = 0.8, phi = 0.9;
     const at = vec3(0.0, 0.0, 0.0);
-    let up = vec3(0.0, 1.0, 0.0);
     let left = -2.0, right = 2.0, bottom = -2.0, ytop = 2.0, near = -10.0, far = 10.0;
 
     // Buffers
@@ -160,42 +161,68 @@
         });
 
         // Mouse drag to orbit camera
-        attachOrbitControls(canvas);
+        attachArcballControls(canvas);
 
         requestAnimationFrame(render);
     };
 
     // --- Orbit controls (drag to rotate) ---
     // Added scroll wheel option to make cube larger or smaller
-    function attachOrbitControls(canvas) {
-        let dragging = false, lastX = 0, lastY = 0;
+    function attachArcballControls(canvas) {
+        let dragging = false;
+        let v0 = null; // arcball vector at mouse-down
 
-        const SENS = 0.005;
-        const TWO_PI = 2 * Math.PI;
-        const EPS = 0.001;
+        const SENS = 1.0;
 
-        canvas.addEventListener("mousedown", (e) => {
+        function screenToArcball(clientX, clientY) {
+            const rect = canvas.getBoundingClientRect();
+            let x = ((clientX - rect.left) / rect.width) * 2 - 1;
+            let y = ((clientY - rect.top) / rect.height) * -2 + 1;
+
+            const len2 = x*x + y*y;
+            if (len2 <= 1) {
+                const z = Math.sqrt(1 - len2);
+                return vec3(x, y, z);
+            } else {
+                const invLen = 1 / Math.sqrt(len2);
+                return vec3(x * invLen, y * invLen, 0);
+            }
+        }
+
+        canvas.style.cursor = 'grab';
+
+        canvas.addEventListener('mousedown', (e) => {
+            if (e.button !== 0) return;
             dragging = true;
-            lastX = e.clientX; lastY = e.clientY;
+            v0 = screenToArcball(e.clientX, e.clientY);
+            canvas.style.cursor = 'grabbing';
+            e.preventDefault();
         });
-        window.addEventListener("mouseup", () => { dragging = false; });
-        window.addEventListener("mousemove", (e) => {
+
+        window.addEventListener('mouseup', () => {
+            dragging = false;
+            canvas.style.cursor = 'grab';
+        });
+
+        window.addEventListener('mousemove', (e) => {
             if (!dragging) return;
-            const dx = e.clientX - lastX;
-            const dy = e.clientY - lastY;
-            lastX = e.clientX; lastY = e.clientY;
 
-            phi = (phi + dx * SENS) % TWO_PI;
-            if (phi < 0) phi += TWO_PI;
+            const v1 = screenToArcball(e.clientX, e.clientY);
+            const axis = cross(v1, v0);
+            const axisLen = Math.hypot(axis[0], axis[1], axis[2]);
 
-            theta -= dy * SENS;
-            if (theta < EPS) theta = EPS;
-            if (theta > Math.PI - EPS) theta = Math.PI - EPS;
+            if (axisLen > 1e-6) {
+                const dotv = Math.max(-1, Math.min(1, dot(v0, v1)));
+                const angleRad = Math.acos(dotv) * SENS;
+                const axisNorm = normalize(axis);
 
-            up = (theta > Math.PI / 2) ? vec3(0, -1, 0) : vec3(0, 1, 0);
+                const rot = rotate(angleRad * 180 / Math.PI, axisNorm);
+                modelRot = mult(rot, modelRot);
+                v0 = v1;
+            }
         });
 
-        canvas.addEventListener("wheel", (e) => {
+        canvas.addEventListener('wheel', (e) => {
             const k = Math.exp(-e.deltaY * 0.001);
             left *= k; right *= k;
             bottom *= k; ytop *= k;
@@ -207,15 +234,14 @@
     function render() {
         gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
-        // Camera position from spherical coordinates
-        const eye = vec3(
-            radius * Math.sin(theta) * Math.cos(phi),
-            radius * Math.sin(theta) * Math.sin(phi),
-            radius * Math.cos(theta)
-        );
-
         // View & projection
-        const modelViewMatrix = lookAt(eye, at, up);
+
+        // Added these consts for arcball click and drag
+        // vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv
+        const eye = vec3(0.0, 0.0, radius);
+        const view = lookAt(eye, at, vec3(0, 1, 0));
+        const modelViewMatrix = mult(view, modelRot);
+        // ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
         const projectionMatrix = ortho(left, right, bottom, ytop, near, far);
 
         // Upload uniforms
